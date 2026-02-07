@@ -1,0 +1,140 @@
+version: '3.8'
+
+x-app-template: &app-template #재사용 가능한 블록 정의 
+  build: ./reservation_system
+  platform: linux/amd64
+  environment:
+    - SERVER_PORT=8080
+    - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/bakery_db
+    - SPRING_DATASOURCE_USERNAME=bakery_admin
+    - SPRING_DATASOURCE_PASSWORD=1234
+    - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+    - SPRING_DATA_REDIS_HOST=redis
+    - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+  depends_on:
+    postgres:
+      condition: service_started
+    redis:
+      condition: service_started
+    kafka:
+      condition: service_healthy
+  networks:
+    - app-network
+  
+  deploy:
+    resources:
+      limits:
+        cpus: '2.0'
+        memory: 1G
+      reservations:
+        cpus: '0.2'
+        memory: 256M
+
+
+services:
+  # WAS 서버 3대
+  app1:
+    <<: *app-template # 템플릿 내용 복붙 
+    container_name: app1 #추가설정 
+    ports:
+      - "8081:8080"
+  app2:
+    <<: *app-template
+    container_name: app2
+    ports:
+      - "8082:8080"
+
+  app3:
+    <<: *app-template
+    container_name: app3
+    ports:
+      - "8083:8080"
+  
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app1
+      - app2
+      - app3
+    networks:
+      - app-network
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_DB: bakery_db
+      POSTGRES_USER: bakery_admin
+      POSTGRES_PASSWORD: 1234
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+    
+  frontend:
+    build: ./reservation_ui
+    container_name: front_app
+    networks:
+      - app-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    networks:
+      - app-network
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+  
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    
+    networks:
+      - app-network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # 내부(앱) 통신과 외부(내 컴퓨터) 통신 주소를 모두 열어줍니다.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+volumes:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
+
+
